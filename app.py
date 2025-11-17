@@ -1,31 +1,152 @@
 import streamlit as st
-from mqtt_control import send_color_rgb
+import cv2
+import numpy as np
+import paho.mqtt.client as mqtt
+import time
 
-st.set_page_config(page_title="Light Reactive Controller", layout="centered")
+# =========================
+# MQTT SETTINGS
+# =========================
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_PORT = 1883
+MQTT_TOPIC = "phio/lights"
 
-st.title("🎥💡 Light Reactive System")
-st.write("Use this app to send RGB test colors to your ESP32 LED strip.")
+client = mqtt.Client()
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
-st.markdown("---")
-st.subheader("Manual Color Sender")
 
-col1, col2 = st.columns([2, 1])
+# =========================
+# SEND COLOR (AUTO MODE)
+# =========================
+def send_rgb(r, g, b):
+    payload = {
+        "r": int(r),
+        "g": int(g),
+        "b": int(b)
+    }
+    client.publish(MQTT_TOPIC, str(payload).replace("'", '"'))
 
-with col1:
-    r = st.slider("Red (R)", 0, 255, 120)
-    g = st.slider("Green (G)", 0, 255, 120)
-    b = st.slider("Blue (B)", 0, 255, 120)
 
-with col2:
-    st.write("### Preview")
-    st.markdown(
-        f"<div style='width:100px;height:100px;border-radius:12px;background:rgb({r},{g},{b});'></div>",
-        unsafe_allow_html=True
-    )
+# =========================
+# SEND MOOD (MANUAL MODE)
+# =========================
+def send_mood(mood_number):
+    payload = {
+        "mode": "manual",
+        "mood": int(mood_number)
+    }
+    client.publish(MQTT_TOPIC, str(payload).replace("'", '"'))
 
-if st.button("Send to LED Strip"):
-    send_color_rgb(r, g, b)
-    st.success(f"Sent RGB({r}, {g}, {b}) to your ESP32!")
 
-st.markdown("---")
-st.info("To sync color with your full screen, run **`screen_capture.py` locally** on your computer.")
+# =========================
+# COLOR FROM FRAME
+# =========================
+def get_dominant_color(frame):
+    img = cv2.resize(frame, (100, 100))
+    avg_color = img.mean(axis=0).mean(axis=0)
+    b, g, r = avg_color
+    return int(r), int(g), int(b)
+
+
+# =========================
+# STREAMLIT UI
+# =========================
+st.set_page_config(page_title="Luces", layout="centered")
+
+st.title("✨ Luces — Control de Ambiente con Video o Moods ✨")
+
+mode = st.radio(
+    "Selecciona un modo:",
+    ["Automático", "Manual"],
+    horizontal=True
+)
+
+st.write("---")
+
+# ======================================================
+# AUTO MODE
+# ======================================================
+if mode == "Automático":
+    st.subheader("🎥 Modo Automático (Video → Colores de LEDs)")
+
+    video_file = st.file_uploader("Sube un video", type=["mp4", "mov", "avi"])
+
+    if video_file is not None:
+        st.video(video_file)
+
+        if st.button("▶ Comenzar lectura de colores"):
+            st.info("Procesando video…")
+
+            # Convert uploaded file to OpenCV
+            bytes_data = video_file.read()
+            with open("temp_video.mp4", "wb") as f:
+                f.write(bytes_data)
+
+            cap = cv2.VideoCapture("temp_video.mp4")
+
+            frame_placeholder = st.empty()
+            color_placeholder = st.empty()
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    st.success("Video terminado ✔")
+                    break
+
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                r, g, b = get_dominant_color(frame)
+                send_rgb(r, g, b)
+
+                frame_placeholder.image(frame, caption=f"Frame actual • RGB = {r}, {g}, {b}")
+                color_placeholder.markdown(
+                    f"<div style='width:100%;height:50px;background:rgb({r},{g},{b});'></div>",
+                    unsafe_allow_html=True
+                )
+
+                time.sleep(0.05)
+
+            cap.release()
+
+
+# ======================================================
+# MANUAL MODE
+# ======================================================
+if mode == "Manual":
+    st.subheader("🎭 Modo Manual (Moods)")
+
+    st.write("Selecciona un mood para las luces:")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("Mood 1 💗"):
+            send_mood(1)
+            st.success("Mood 1 enviado!")
+
+    with col2:
+        if st.button("Mood 2 🔥"):
+            send_mood(2)
+            st.success("Mood 2 enviado!")
+
+    with col3:
+        if st.button("Mood 3 🌊"):
+            send_mood(3)
+            st.success("Mood 3 enviado!")
+
+    col4, col5, col6 = st.columns(3)
+
+    with col4:
+        if st.button("Mood 4 🌿"):
+            send_mood(4)
+            st.success("Mood 4 enviado!")
+
+    with col5:
+        if st.button("Mood 5 🌞"):
+            send_mood(5)
+            st.success("Mood 5 enviado!")
+
+    with col6:
+        if st.button("Mood 6 💜"):
+            send_mood(6)
+            st.success("Mood 6 enviado!")
