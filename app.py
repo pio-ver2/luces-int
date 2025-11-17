@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
 import time
+import threading
 
 # =========================
 # MQTT SETTINGS
@@ -13,6 +14,9 @@ MQTT_TOPIC = "phio/lights"
 
 client = mqtt.Client()
 client.connect(MQTT_BROKER, MQTT_PORT, 60)
+
+# Global flag to STOP auto mode
+stop_auto = False
 
 
 # =========================
@@ -42,10 +46,45 @@ def send_mood(mood_number):
 # COLOR FROM FRAME
 # =========================
 def get_dominant_color(frame):
-    img = cv2.resize(frame, (100, 100))
+    img = cv2.resize(frame, (80, 80))
     avg_color = img.mean(axis=0).mean(axis=0)
     b, g, r = avg_color
     return int(r), int(g), int(b)
+
+
+# =========================
+# AUTO MODE VIDEO LOOP
+# =========================
+def run_auto_mode(video_bytes, frame_placeholder, color_placeholder, message_box):
+    global stop_auto
+    stop_auto = False
+
+    with open("temp_video.mp4", "wb") as f:
+        f.write(video_bytes)
+
+    cap = cv2.VideoCapture("temp_video.mp4")
+
+    message_box.info("Procesando video... presiona un Mood para detener Auto Mode")
+
+    while cap.isOpened() and not stop_auto:
+        ret, frame = cap.read()
+        if not ret:
+            message_box.success("Video terminado ✔")
+            break
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        r, g, b = get_dominant_color(frame)
+        send_rgb(r, g, b)
+
+        frame_placeholder.image(frame, caption=f"Frame actual • RGB = {r}, {g}, {b}")
+        color_placeholder.markdown(
+            f"<div style='width:100%;height:50px;background:rgb({r},{g},{b});border-radius:8px;'></div>",
+            unsafe_allow_html=True
+        )
+
+        time.sleep(0.04)
+
+    cap.release()
 
 
 # =========================
@@ -53,100 +92,75 @@ def get_dominant_color(frame):
 # =========================
 st.set_page_config(page_title="Luces", layout="centered")
 
-st.title("✨ Luces — Control de Ambiente con Video o Moods ✨")
-
-mode = st.radio(
-    "Selecciona un modo:",
-    ["Automático", "Manual"],
-    horizontal=True
-)
+st.title("✨ Luces — Control de Ambiente ✨")
+st.write("### Modo Automático + Modo Manual (Moods)")
 
 st.write("---")
 
-# ======================================================
-# AUTO MODE
-# ======================================================
-if mode == "Automático":
-    st.subheader("🎥 Modo Automático (Video → Colores de LEDs)")
+# =========================
+# AUTO MODE SECTION
+# =========================
 
-    video_file = st.file_uploader("Sube un video", type=["mp4", "mov", "avi"])
+st.subheader("🎥 Modo Automático (Video → LEDs)")
 
-    if video_file is not None:
-        st.video(video_file)
+video_file = st.file_uploader("Sube un video", type=["mp4", "mov", "avi"])
 
-        if st.button("▶ Comenzar lectura de colores"):
-            st.info("Procesando video…")
+colA1, colA2 = st.columns(2)
 
-            # Convert uploaded file to OpenCV
-            bytes_data = video_file.read()
-            with open("temp_video.mp4", "wb") as f:
-                f.write(bytes_data)
+auto_active = st.session_state.get("auto_active", False)
 
-            cap = cv2.VideoCapture("temp_video.mp4")
+if colA1.button("▶ Activar Auto Mode"):
+    if video_file is None:
+        st.warning("Sube un video primero.")
+    else:
+        st.session_state.auto_active = True
+        st.session_state.manual_active = False
+        stop_auto = False  # reset flag
 
-            frame_placeholder = st.empty()
-            color_placeholder = st.empty()
+        frame_placeholder = st.empty()
+        color_placeholder = st.empty()
+        message_box = st.empty()
 
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    st.success("Video terminado ✔")
-                    break
+        # background thread so UI doesn’t freeze
+        threading.Thread(
+            target=run_auto_mode,
+            args=(video_file.read(), frame_placeholder, color_placeholder, message_box),
+            daemon=True
+        ).start()
 
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                r, g, b = get_dominant_color(frame)
-                send_rgb(r, g, b)
-
-                frame_placeholder.image(frame, caption=f"Frame actual • RGB = {r}, {g}, {b}")
-                color_placeholder.markdown(
-                    f"<div style='width:100%;height:50px;background:rgb({r},{g},{b});'></div>",
-                    unsafe_allow_html=True
-                )
-
-                time.sleep(0.05)
-
-            cap.release()
+if colA2.button("⛔ Detener Auto Mode"):
+    st.session_state.auto_active = False
+    stop_auto = True
+    st.info("Modo Automático detenido.")
 
 
-# ======================================================
-# MANUAL MODE
-# ======================================================
-if mode == "Manual":
-    st.subheader("🎭 Modo Manual (Moods)")
+st.write("---")
 
-    st.write("Selecciona un mood para las luces:")
+# =========================
+# MANUAL MOODS SECTION
+# =========================
+st.subheader("🎭 Modo Manual (Moods)")
 
-    col1, col2, col3 = st.columns(3)
+st.write("Selecciona un mood. Esto **detiene Auto Mode automáticamente**.")
 
-    with col1:
-        if st.button("Mood 1 💗"):
-            send_mood(1)
-            st.success("Mood 1 enviado!")
+col1, col2, col3 = st.columns(3)
 
-    with col2:
-        if st.button("Mood 2 🔥"):
-            send_mood(2)
-            st.success("Mood 2 enviado!")
+# Each mood button stops auto mode AND sends palette
+def mood_button(col, num, label):
+    global stop_auto
+    if col.button(label):
+        stop_auto = True
+        st.session_state.manual_active = True
+        st.session_state.auto_active = False
+        send_mood(num)
+        st.success(f"Mood {num} activado ✨")
 
-    with col3:
-        if st.button("Mood 3 🌊"):
-            send_mood(3)
-            st.success("Mood 3 enviado!")
 
-    col4, col5, col6 = st.columns(3)
+mood_button(col1, 1, "Mood 1 💗")
+mood_button(col2, 2, "Mood 2 🔥")
+mood_button(col3, 3, "Mood 3 🌊")
 
-    with col4:
-        if st.button("Mood 4 🌿"):
-            send_mood(4)
-            st.success("Mood 4 enviado!")
-
-    with col5:
-        if st.button("Mood 5 🌞"):
-            send_mood(5)
-            st.success("Mood 5 enviado!")
-
-    with col6:
-        if st.button("Mood 6 💜"):
-            send_mood(6)
-            st.success("Mood 6 enviado!")
+col4, col5, col6 = st.columns(3)
+mood_button(col4, 4, "Mood 4 🌿")
+mood_button(col5, 5, "Mood 5 🌞")
+mood_button(col6, 6, "Mood 6 💜")
