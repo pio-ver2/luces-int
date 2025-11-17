@@ -2,8 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
-import time
-import threading
+import tempfile
 
 # =========================
 # MQTT SETTINGS
@@ -12,155 +11,142 @@ MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "phio/lights"
 
-client = mqtt.Client()
-client.connect(MQTT_BROKER, MQTT_PORT, 60)
-
-# Global flag to STOP auto mode
-stop_auto = False
+# MQTT client
+mqtt_client = mqtt.Client()
+mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
 
 # =========================
-# SEND COLOR (AUTO MODE)
+# SEND COLOR TO MQTT
 # =========================
-def send_rgb(r, g, b):
-    payload = {
-        "r": int(r),
-        "g": int(g),
-        "b": int(b)
-    }
-    client.publish(MQTT_TOPIC, str(payload).replace("'", '"'))
+def send_color(r, g, b):
+    payload = {"r": int(r), "g": int(g), "b": int(b)}
+    mqtt_client.publish(MQTT_TOPIC, str(payload))
 
 
 # =========================
-# SEND MOOD (MANUAL MODE)
+# COLOR EXTRACTION (AUTO MODE)
 # =========================
-def send_mood(mood_number):
-    payload = {
-        "mode": "manual",
-        "mood": int(mood_number)
-    }
-    client.publish(MQTT_TOPIC, str(payload).replace("'", '"'))
+def dominant_color(frame):
+    frame_small = cv2.resize(frame, (64, 64))
+    data = frame_small.reshape((-1, 3))
+    data = np.float32(data)
 
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    k = 1
+    _, labels, centers = cv2.kmeans(data, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
 
-# =========================
-# COLOR FROM FRAME
-# =========================
-def get_dominant_color(frame):
-    img = cv2.resize(frame, (80, 80))
-    avg_color = img.mean(axis=0).mean(axis=0)
-    b, g, r = avg_color
+    r, g, b = centers[0]
     return int(r), int(g), int(b)
 
 
 # =========================
-# AUTO MODE VIDEO LOOP
+# MANUAL MOOD PRESETS
 # =========================
-def run_auto_mode(video_bytes, frame_placeholder, color_placeholder, message_box):
-    global stop_auto
-    stop_auto = False
-
-    with open("temp_video.mp4", "wb") as f:
-        f.write(video_bytes)
-
-    cap = cv2.VideoCapture("temp_video.mp4")
-
-    message_box.info("Procesando video... presiona un Mood para detener Auto Mode")
-
-    while cap.isOpened() and not stop_auto:
-        ret, frame = cap.read()
-        if not ret:
-            message_box.success("Video terminado ✔")
-            break
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        r, g, b = get_dominant_color(frame)
-        send_rgb(r, g, b)
-
-        frame_placeholder.image(frame, caption=f"Frame actual • RGB = {r}, {g}, {b}")
-        color_placeholder.markdown(
-            f"<div style='width:100%;height:50px;background:rgb({r},{g},{b});border-radius:8px;'></div>",
-            unsafe_allow_html=True
-        )
-
-        time.sleep(0.04)
-
-    cap.release()
+mood_presets = {
+    "Romantic": [
+        (255, 0, 80),
+        (255, 120, 160),
+        (255, 200, 220),
+        (180, 0, 50),
+        (255, 40, 120),
+    ],
+    "Scary": [
+        (5, 0, 0),
+        (50, 0, 0),
+        (20, 0, 0),
+        (80, 10, 10),
+        (150, 0, 0),
+    ],
+    "Happy": [
+        (255, 220, 0),
+        (255, 120, 0),
+        (255, 255, 80),
+        (255, 180, 40),
+        (255, 240, 120),
+    ],
+    "Chill": [
+        (0, 80, 180),
+        (0, 120, 255),
+        (80, 200, 255),
+        (40, 140, 200),
+        (0, 60, 140),
+    ],
+    "Party": [
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 0),
+        (0, 255, 100),
+        (255, 100, 0),
+    ],
+    "Warm Cozy": [
+        (255, 120, 60),
+        (200, 80, 40),
+        (255, 160, 100),
+        (180, 60, 20),
+        (255, 200, 140),
+    ],
+}
 
 
 # =========================
 # STREAMLIT UI
 # =========================
-st.set_page_config(page_title="Luces", layout="centered")
+st.set_page_config(page_title="Luces INT", layout="wide")
 
-st.title("✨ Luces — Control de Ambiente ✨")
-st.write("### Modo Automático + Modo Manual (Moods)")
+st.title("🌈 Luces-INT – Control Your ESP32 Lights")
 
-st.write("---")
+mode = st.radio("Choose Mode:", ["Automatic", "Manual"], horizontal=True)
 
-# =========================
-# AUTO MODE SECTION
-# =========================
+st.markdown("---")
 
-st.subheader("🎥 Modo Automático (Video → LEDs)")
+# =============== AUTO MODE ===============
+if mode == "Automatic":
+    st.subheader("🎥 Upload Video for Auto Color Detection")
 
-video_file = st.file_uploader("Sube un video", type=["mp4", "mov", "avi"])
+    video_file = st.file_uploader("Upload MP4 video", type=["mp4"])
 
-colA1, colA2 = st.columns(2)
+    if video_file is not None:
+        st.video(video_file)  # video player
 
-auto_active = st.session_state.get("auto_active", False)
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        tmp_file.write(video_file.read())
+        tmp_path = tmp_file.name
 
-if colA1.button("▶ Activar Auto Mode"):
-    if video_file is None:
-        st.warning("Sube un video primero.")
-    else:
-        st.session_state.auto_active = True
-        st.session_state.manual_active = False
-        stop_auto = False  # reset flag
+        if st.button("Start Auto Lighting"):
+            st.warning("Processing… keep Wokwi simulation open!", icon="⚡")
 
-        frame_placeholder = st.empty()
-        color_placeholder = st.empty()
-        message_box = st.empty()
+            cap = cv2.VideoCapture(tmp_path)
 
-        # background thread so UI doesn’t freeze
-        threading.Thread(
-            target=run_auto_mode,
-            args=(video_file.read(), frame_placeholder, color_placeholder, message_box),
-            daemon=True
-        ).start()
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-if colA2.button("⛔ Detener Auto Mode"):
-    st.session_state.auto_active = False
-    stop_auto = True
-    st.info("Modo Automático detenido.")
+                # Convert BGR → RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+                r, g, b = dominant_color(frame)
+                send_color(r, g, b)
 
-st.write("---")
+            cap.release()
+            st.success("Video finished! Lights updated 🎉")
 
-# =========================
-# MANUAL MOODS SECTION
-# =========================
-st.subheader("🎭 Modo Manual (Moods)")
+# =============== MANUAL MODE ===============
+else:
+    st.subheader("🎨 Pick a Mood")
 
-st.write("Selecciona un mood. Esto **detiene Auto Mode automáticamente**.")
+    chosen = st.selectbox("Mood:", list(mood_presets.keys()))
 
-col1, col2, col3 = st.columns(3)
+    colors = mood_presets[chosen]
+    st.write(f"Palette ({chosen}):", colors)
 
-# Each mood button stops auto mode AND sends palette
-def mood_button(col, num, label):
-    global stop_auto
-    if col.button(label):
-        stop_auto = True
-        st.session_state.manual_active = True
-        st.session_state.auto_active = False
-        send_mood(num)
-        st.success(f"Mood {num} activado ✨")
+    if st.button("Apply Mood"):
+        st.info("Sending mood to LED strip…", icon="✨")
 
+        # Alternate colors along LED strip
+        for i, (r, g, b) in enumerate(colors):
+            send_color(r, g, b)
 
-mood_button(col1, 1, "Mood 1 💗")
-mood_button(col2, 2, "Mood 2 🔥")
-mood_button(col3, 3, "Mood 3 🌊")
+        st.success("Mood applied 💡✨")
 
-col4, col5, col6 = st.columns(3)
-mood_button(col4, 4, "Mood 4 🌿")
-mood_button(col5, 5, "Mood 5 🌞")
-mood_button(col6, 6, "Mood 6 💜")
