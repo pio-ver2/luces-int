@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
 import tempfile
+import json
+
 
 # =========================
 # MQTT SETTINGS
@@ -23,7 +25,7 @@ mqtt_client.loop_start()
 # =========================
 def send_color(r, g, b):
     payload = {"r": int(r), "g": int(g), "b": int(b)}
-    mqtt_client.publish(MQTT_TOPIC, str(payload))
+    mqtt_client.publish(MQTT_TOPIC, json.dumps(payload))
 
 
 # =========================
