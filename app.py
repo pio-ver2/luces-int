@@ -12,8 +12,10 @@ MQTT_PORT = 1883
 MQTT_TOPIC = "phio/lights"
 
 # MQTT client
-mqtt_client = mqtt.Client()
+mqtt_client = mqtt.Client(client_id="streamlit-client")
 mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+mqtt_client.loop_start()
+
 
 
 # =========================
